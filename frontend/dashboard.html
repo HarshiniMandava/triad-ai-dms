@@ -1,0 +1,257 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TRIAD AI | Workspace</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body class="workspace-body">
+<div class="workspace">
+
+  <aside class="sidebar">
+    <div class="sidebar-brand">
+      <div class="brand-icon">T</div>
+      <div>
+        <h2>TRIAD AI</h2>
+        <p>Document Intelligence</p>
+      </div>
+    </div>
+
+    <div class="workspace-label">WORKSPACE</div>
+    <nav class="sidebar-nav">
+      <button class="nav-item active" data-section="overview" onclick="showSection('overview')">◫ Overview</button>
+      <button class="nav-item" data-section="documents" onclick="showSection('documents')">▤ All Documents</button>
+      <button class="nav-item" data-section="upload" onclick="showSection('upload')">↑ Upload Center</button>
+      <button class="nav-item" data-section="search" onclick="showSection('search')">⌕ Smart Search</button>
+    </nav>
+
+    <div class="workspace-label">MANAGEMENT</div>
+    <nav class="sidebar-nav">
+      <button class="nav-item" data-section="requests" onclick="showSection('requests')">✓ Access Requests</button>
+      <button class="nav-item" data-section="metadata" onclick="showSection('metadata')">◇ Custom Metadata</button>
+    </nav>
+
+    <div class="sidebar-bottom">
+      <div class="sidebar-user">
+        <div class="user-avatar">U</div>
+        <div>
+          <strong>My Workspace</strong>
+          <small>Secure document access</small>
+        </div>
+      </div>
+      <button class="logout-btn" onclick="logout()">Log Out</button>
+    </div>
+  </aside>
+
+  <main class="main-content">
+    <header class="topbar">
+      <span id="breadcrumb">Workspace / Overview</span>
+      <button class="action-btn" onclick="showSection('upload')">+ Upload Document</button>
+    </header>
+
+    <div class="content-area">
+
+      <section id="overview" class="dashboard-section">
+        <div class="page-heading">
+          <h1>Workspace Overview</h1>
+          <p>Your secure document management center.</p>
+        </div>
+
+        <div class="stats-grid">
+          <div class="stat-card">
+            <p>Total Documents</p>
+            <h2 id="totalDocuments">—</h2>
+            <small>Accessible documents</small>
+          </div>
+          <div class="stat-card">
+            <p>Pending Requests</p>
+            <h2 id="pendingCount">—</h2>
+            <small>Awaiting decisions</small>
+          </div>
+          <div class="stat-card">
+            <p>Smart Search</p>
+            <h2>OCR</h2>
+            <small>Search extracted text</small>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-heading">
+            <h2>Recent Documents</h2>
+            <button onclick="showSection('documents')">View All</button>
+          </div>
+          <div id="recentDocuments"></div>
+        </div>
+      </section>
+
+      <section id="documents" class="dashboard-section" hidden>
+        <div class="page-heading">
+          <h1>Document Library</h1>
+          <p>Browse and filter your accessible documents.</p>
+        </div>
+
+        <div class="panel">
+          <h2>Dynamic Metadata Filters</h2>
+          <p class="muted-paragraph">
+            Filter documents using any custom metadata field.
+          </p>
+
+          <form id="documentFilterForm">
+            <div class="search-controls">
+              <input
+                id="filterField"
+                type="text"
+                placeholder="Field name (e.g. Priority)"
+                aria-label="Metadata field name"
+                required
+              >
+              <input
+                id="filterValue"
+                type="text"
+                placeholder="Value (e.g. High)"
+                aria-label="Metadata field value"
+                required
+              >
+              <button type="submit" class="action-btn">Apply Filter</button>
+              <button type="button" onclick="clearDocumentFilters()">Clear Filters</button>
+            </div>
+          </form>
+
+          <p id="filterStatus" class="muted-paragraph">
+            Showing all accessible documents.
+          </p>
+        </div>
+
+        <div class="panel">
+          <div class="panel-heading">
+            <h2>All Documents</h2>
+            <button onclick="loadDocuments()">Refresh</button>
+          </div>
+          <div id="documentList"></div>
+        </div>
+      </section>
+
+      <section id="upload" class="dashboard-section" hidden>
+        <div class="page-heading">
+          <h1>Upload Center</h1>
+          <p>Securely upload and index documents.</p>
+        </div>
+        <div class="panel upload-panel">
+          <form id="uploadForm">
+            <label for="documentFile">Select Document</label>
+            <div class="upload-zone">
+              <h3>Choose a document to upload</h3>
+              <p>PDF, PNG, JPG, JPEG, TIFF, BMP — maximum 15 MB</p>
+              <input type="file" id="documentFile" accept=".pdf,.png,.jpg,.jpeg,.tiff,.bmp" required>
+            </div>
+            <label for="category">Document Category</label>
+            <input id="category" type="text" placeholder="e.g. Reports">
+            <button class="action-btn" type="submit">Upload Document</button>
+          </form>
+        </div>
+      </section>
+
+      <section id="search" class="dashboard-section" hidden>
+        <div class="page-heading">
+          <h1>Smart Document Search</h1>
+          <p>Search filenames, metadata, and OCR content.</p>
+        </div>
+        <div class="panel">
+          <div class="search-controls">
+            <input id="searchInput" type="search" placeholder="Search documents...">
+            <button onclick="searchDocuments()">Search</button>
+          </div>
+          <div id="searchResults"></div>
+        </div>
+      </section>
+
+      <section id="requests" class="dashboard-section" hidden>
+        <div class="page-heading">
+          <h1>Access Management</h1>
+          <p>Review incoming document access requests.</p>
+        </div>
+        <div class="panel">
+          <div class="panel-heading">
+            <h2>Pending Approvals</h2>
+            <button onclick="loadPendingRequests()">Refresh</button>
+          </div>
+          <div id="requestList"></div>
+        </div>
+      </section>
+
+      <section id="metadata" class="dashboard-section" hidden>
+        <div class="page-heading">
+          <h1>Custom Metadata Editor</h1>
+          <p>Add, edit, or remove metadata fields on documents you own.</p>
+        </div>
+        <div class="panel">
+          <label for="metadataDocumentSelect">Choose a document</label>
+          <select id="metadataDocumentSelect">
+            <option value="">Loading documents...</option>
+          </select>
+          <p id="metadataEditorStatus" class="muted-paragraph">
+            Select a document to begin.
+          </p>
+          <div id="metadataFields" class="metadata-fields"></div>
+          <div class="metadata-actions">
+            <button id="addMetadataField" type="button" onclick="addMetadataRow()" disabled>+ Add Field</button>
+            <button id="saveMetadataButton" type="button" class="action-btn" onclick="saveDocumentMetadata()" disabled>Save Metadata</button>
+          </div>
+          <p class="muted-paragraph">
+            Saving replaces the selected document's metadata. Only its owner can make changes.
+          </p>
+        </div>
+      </section>
+
+      <section id="details" class="dashboard-section" hidden>
+        <div class="page-heading">
+          <h1>Document Details</h1>
+          <p>Preview documents, inspect metadata and read extracted text.</p>
+        </div>
+        <div class="panel">
+          <div class="panel-heading">
+            <div>
+              <h2 id="detailFilename">Document</h2>
+              <p id="detailDivision"></p>
+            </div>
+            <button onclick="showSection('documents')">Back to Documents</button>
+          </div>
+          <div class="document-detail-actions">
+            <button id="detailDownloadButton" class="action-btn" disabled>Download Document</button>
+            <button id="editDetailsMetadataButton" disabled>Edit Metadata</button>
+          </div>
+          <div class="document-detail-grid">
+            <div class="panel document-preview-panel">
+              <h2>Document Preview</h2>
+              <p id="previewStatus">Select a document.</p>
+              <iframe id="pdfPreview" title="PDF preview" hidden></iframe>
+            </div>
+            <div class="document-info-column">
+              <div class="panel">
+                <h2>Document Information</h2>
+                <div id="documentInfo"></div>
+              </div>
+              <div class="panel">
+                <h2>Custom Metadata</h2>
+                <div id="documentMetadata"></div>
+              </div>
+            </div>
+          </div>
+          <div class="panel ocr-panel">
+            <h2>Extracted OCR Text</h2>
+            <pre id="documentOCR"></pre>
+          </div>
+        </div>
+      </section>
+
+      <p id="dashboardMessage" role="status" aria-live="polite"></p>
+    </div>
+  </main>
+</div>
+
+<script src="config.js"></script>
+<script src="dashboard.js"></script>
+</body>
+</html>

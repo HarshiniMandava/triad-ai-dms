@@ -1,0 +1,34 @@
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+
+# Python virtual environment
+venv/
+.venv/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.coverage
+
+# VS Code settings
+.vscode/
+
+# Generated ZIP files
+*.zip
+
+# Local test documents
+sample.pdf
+test_document.pdf
+test_document.txt
+downloaded_*.pdf
+hr_*download*.pdf
+preview_*.pdf
+metadata.json
+
+# OS files
+.DS_Store
+Thumbs.db
