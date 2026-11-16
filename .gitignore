@@ -32,3 +32,6 @@ metadata.json
 # OS files
 .DS_Store
 Thumbs.db
+# Local administrator setup utilities
+backend/create_admin.py
+backend/migrate_users.py
