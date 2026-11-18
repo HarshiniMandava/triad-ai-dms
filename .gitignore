@@ -35,3 +35,8 @@ Thumbs.db
 # Local administrator setup utilities
 backend/create_admin.py
 backend/migrate_users.py
+# Frontend backups
+frontend/backup_before_restore/
+frontend_backup_18nov/
+*.backup
+test_report.txt

@@ -1,6 +1,6 @@
 
-const API_BASE = window.DMS_API_BASE;
-const token = sessionStorage.getItem('access_token');
+const API_BASE = window.DMS_API_BASE || "http://127.0.0.1:5000/api";
+const token = sessionStorage.getItem("access_token");
 
 let previewUrl = null;
 let detailsVersion = 0;
@@ -10,7 +10,7 @@ let currentDetailsId = null;
 let selectedMetadataDocument = null;
 
 if (!token) {
-  window.location.replace('index.html');
+    window.location.replace("index.html");
 }
 
 // =====================================
@@ -18,72 +18,85 @@ if (!token) {
 // =====================================
 
 function logout() {
-  clearPreview();
-  sessionStorage.removeItem('access_token');
-  window.location.replace('index.html');
+    clearPreview();
+    sessionStorage.removeItem("access_token");
+    window.location.replace("index.html");
 }
 
 function showMessage(message, error = false) {
-  const el = document.getElementById('dashboardMessage');
-  el.textContent = message;
-  el.style.color = error ? '#f87171' : '#2dd4bf';
+    const el = document.getElementById("dashboardMessage");
+    if (!el) return;
+
+    el.textContent = message;
+    el.style.color = error ? "#f87171" : "#2dd4bf";
 }
 
 function empty(container, message) {
-  container.replaceChildren();
+    if (!container) return;
 
-  const el = document.createElement('p');
-  el.className = 'empty-state';
-  el.textContent = message;
-  container.append(el);
+    container.replaceChildren();
+
+    const el = document.createElement("p");
+    el.className = "empty-state";
+    el.textContent = message;
+    container.append(el);
 }
 
 async function apiRequest(path, options = {}) {
-  const response = await fetch(API_BASE + path, {
-    ...options,
-    headers: {
-      Authorization: `Bearer ${token}`,
-      ...(options.headers || {})
+    const response = await fetch(API_BASE + path, {
+        ...options,
+        headers: {
+            Authorization: `Bearer ${token}`,
+            ...(options.headers || {})
+        }
+    });
+
+    const data = await response.json().catch(() => ({}));
+
+    if (!response.ok) {
+        if (response.status === 401 || response.status === 422) {
+            logout();
+            throw new Error("Session expired. Please log in again.");
+        }
+
+        throw new Error(
+            data.error ||
+            data.msg ||
+            data.message ||
+            `Request failed (${response.status})`
+        );
     }
-  });
 
-  const data = await response.json().catch(() => ({}));
-
-  if (!response.ok) {
-    if (response.status === 401 || response.status === 422) {
-      logout();
-      throw new Error('Session expired. Please log in again.');
-    }
-
-    throw new Error(
-      data.error ||
-      data.msg ||
-      data.message ||
-      `Request failed (${response.status})`
-    );
-  }
-
-  return data;
+    return data;
 }
 
 const docsFrom = data =>
-  Array.isArray(data)
-    ? data
-    : (data.documents || data.results || []);
+    Array.isArray(data)
+        ? data
+        : (data.documents || data.results || []);
 
 const docId = doc =>
-  doc.document_id || doc._id || doc.id;
+    doc.document_id || doc._id || doc.id;
+
+function canDeleteDocument(doc) {
+    // The Flask backend determines permission.
+    // This includes the owner and approved
+    // administrators of the document's division.
+    return doc.can_delete === true;
+}
 
 function clearPreview() {
-  const frame = document.getElementById('pdfPreview');
+    const frame = document.getElementById("pdfPreview");
 
-  frame.hidden = true;
-  frame.removeAttribute('src');
+    if (frame) {
+        frame.hidden = true;
+        frame.removeAttribute("src");
+    }
 
-  if (previewUrl) {
-    URL.revokeObjectURL(previewUrl);
-    previewUrl = null;
-  }
+    if (previewUrl) {
+        URL.revokeObjectURL(previewUrl);
+        previewUrl = null;
+    }
 }
 
 // =====================================
@@ -91,42 +104,325 @@ function clearPreview() {
 // =====================================
 
 function showSection(id) {
-  detailsVersion++;
+    detailsVersion++;
 
-  if (id !== 'details') {
-    clearPreview();
-  }
+    if (id !== "details") {
+        clearPreview();
+        currentDetailsId = null;
+    }
 
-  document.querySelectorAll('.dashboard-section').forEach(section => {
-    section.hidden = section.id !== id;
-  });
+    document.querySelectorAll(".dashboard-section").forEach(section => {
+        section.hidden = section.id !== id;
+    });
 
-  document.querySelectorAll('.nav-item').forEach(button => {
-    button.classList.toggle(
-      'active',
-      button.dataset.section === id
+    document.querySelectorAll(".nav-item").forEach(button => {
+        button.classList.toggle(
+            "active",
+            button.dataset.section === id
+        );
+    });
+
+    const titles = {
+        overview: "Overview",
+        documents: "All Documents",
+        upload: "Upload Center",
+        search: "Smart Search",
+        requests: "Access Requests",
+        userApprovals: "User Approvals",
+        metadata: "Custom Metadata",
+        details: "Document Details"
+    };
+
+    const breadcrumb = document.getElementById("breadcrumb");
+
+    if (breadcrumb) {
+        breadcrumb.textContent =
+            `Workspace / ${titles[id] || id}`;
+    }
+
+    showMessage("");
+
+    if (id === "overview") loadOverview();
+    if (id === "documents") loadDocuments();
+    if (id === "requests") loadPendingRequests();
+    if (id === "userApprovals") loadPendingUsers();
+    if (id === "metadata") loadMetadataDocuments();
+}
+
+// =====================================
+// ADMIN NAVIGATION
+// =====================================
+
+async function setupUserApprovalsNav() {
+    const nav = document.getElementById("userApprovalsNav");
+
+    if (!nav) return;
+
+    nav.hidden = true;
+
+    try {
+        await apiRequest("/admin/pending");
+        nav.hidden = false;
+
+    } catch (error) {
+        nav.hidden = true;
+
+        console.log(
+            "User Approvals unavailable:",
+            error.message
+        );
+    }
+}
+
+// =====================================
+// USER REGISTRATION APPROVALS
+// =====================================
+
+async function loadPendingUsers() {
+    const container = document.getElementById("pendingUsersList");
+    const count = document.getElementById("pendingUsersCount");
+
+    if (!container) return;
+
+    empty(container, "Loading pending registrations...");
+
+    if (count) {
+        count.textContent = "-";
+    }
+
+    try {
+        const data = await apiRequest("/admin/pending");
+
+        const users = Array.isArray(data.users)
+            ? data.users
+            : [];
+
+        if (count) {
+            count.textContent = users.length;
+        }
+
+        container.replaceChildren();
+
+        if (users.length === 0) {
+            empty(
+                container,
+                "No pending user registrations in your division."
+            );
+            return;
+        }
+
+        users.forEach(user => {
+            const row = document.createElement("div");
+            row.className = "document-item";
+
+            const info = document.createElement("div");
+            info.className = "document-row-info";
+
+            const name = document.createElement("strong");
+            name.textContent = user.username || "Unnamed user";
+
+            const details = document.createElement("p");
+            details.className = "muted-paragraph";
+
+            details.textContent =
+                `Email: ${user.email || "Not available"} | ` +
+                `Division: ${user.division || "Unknown"} | ` +
+                "Status: Pending";
+
+            info.append(name, details);
+
+            const actions = document.createElement("div");
+            actions.className = "document-row-actions";
+
+            const approveButton = document.createElement("button");
+            approveButton.className = "action-btn";
+            approveButton.textContent = "Approve";
+
+            const rejectButton = document.createElement("button");
+            rejectButton.textContent = "Reject";
+
+            approveButton.disabled = !user.user_id;
+            rejectButton.disabled = !user.user_id;
+
+            approveButton.onclick = () =>
+                decideUserRegistration(
+                    user.user_id,
+                    "approve",
+                    user.username
+                );
+
+            rejectButton.onclick = () =>
+                decideUserRegistration(
+                    user.user_id,
+                    "reject",
+                    user.username
+                );
+
+            actions.append(approveButton, rejectButton);
+            row.append(info, actions);
+            container.append(row);
+        });
+
+    } catch (error) {
+        empty(container, "Unable to load pending users.");
+
+        if (count) {
+            count.textContent = "-";
+        }
+
+        showMessage(error.message, true);
+    }
+}
+
+async function decideUserRegistration(
+    userId,
+    decision,
+    username = "this user"
+) {
+    if (!userId) {
+        showMessage("Invalid user ID.", true);
+        return;
+    }
+
+    const action = decision === "approve"
+        ? "approve"
+        : "reject";
+
+    const confirmed = window.confirm(
+        `Are you sure you want to ${action} ${username}?`
     );
-  });
 
-  const titles = {
-    overview: 'Overview',
-    documents: 'All Documents',
-    upload: 'Upload Center',
-    search: 'Smart Search',
-    requests: 'Access Requests',
-    metadata: 'Custom Metadata',
-    details: 'Document Details'
-  };
+    if (!confirmed) return;
 
-  document.getElementById('breadcrumb').textContent =
-    `Workspace / ${titles[id] || id}`;
+    const container = document.getElementById("pendingUsersList");
 
-  showMessage('');
+    if (container) {
+        container.querySelectorAll("button").forEach(button => {
+            button.disabled = true;
+        });
+    }
 
-  if (id === 'overview') loadOverview();
-  if (id === 'documents') loadDocuments();
-  if (id === 'requests') loadPendingRequests();
-  if (id === 'metadata') loadMetadataDocuments();
+    try {
+        const data = await apiRequest(
+            `/admin/${encodeURIComponent(userId)}/decision`,
+            {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify({
+                    decision: action
+                })
+            }
+        );
+
+        await loadPendingUsers();
+
+        showMessage(
+            data.message ||
+            `User ${action === "approve" ? "approved" : "rejected"} successfully.`
+        );
+
+    } catch (error) {
+        await loadPendingUsers();
+        showMessage(error.message, true);
+    }
+}
+
+// =====================================
+// DELETE DOCUMENT
+// =====================================
+
+function createDeleteButton(id, filename) {
+    const button = document.createElement("button");
+
+    button.type = "button";
+    button.className = "delete-document-btn";
+    button.textContent = "Delete";
+
+    button.style.color = "#f87171";
+    button.style.border = "1px solid #f87171";
+    button.style.borderRadius = "8px";
+    button.style.padding = "9px 14px";
+    button.style.cursor = "pointer";
+
+    button.disabled = !id;
+
+    button.onclick = () =>
+        deleteDocument(id, filename, button);
+
+    return button;
+}
+
+async function deleteDocument(id, filename, button = null) {
+    if (!id) {
+        showMessage("Invalid document ID.", true);
+        return;
+    }
+
+    const confirmed = window.confirm(
+        `Are you sure you want to permanently delete "${filename || "this document"}"?\n\n` +
+        "The stored file, OCR text, metadata and related access requests will be removed.\n\n" +
+        "This action cannot be undone."
+    );
+
+    if (!confirmed) return;
+
+    if (button) {
+        button.disabled = true;
+        button.textContent = "Deleting...";
+    }
+
+    try {
+        const data = await apiRequest(
+            `/documents/${encodeURIComponent(id)}`,
+            {
+                method: "DELETE"
+            }
+        );
+
+        const wasViewingDetails =
+            String(currentDetailsId) === String(id);
+
+        if (wasViewingDetails) {
+            currentDetailsId = null;
+            clearPreview();
+            showSection("documents");
+        }
+
+        const activeSection = document.querySelector(
+            ".dashboard-section:not([hidden])"
+        );
+
+        const refreshTasks = [
+            loadOverview(),
+            loadDocuments()
+        ];
+
+        if (activeSection?.id === "search") {
+            refreshTasks.push(searchDocuments());
+        }
+
+        if (activeSection?.id === "metadata") {
+            refreshTasks.push(loadMetadataDocuments());
+        }
+
+        await Promise.allSettled(refreshTasks);
+
+        showMessage(
+            data.message ||
+            `"${filename || "Document"}" deleted successfully.`
+        );
+
+    } catch (error) {
+        showMessage(error.message, true);
+
+    } finally {
+        if (button && button.isConnected) {
+            button.disabled = false;
+            button.textContent = "Delete";
+        }
+    }
 }
 
 // =====================================
@@ -134,77 +430,93 @@ function showSection(id) {
 // =====================================
 
 function renderDocuments(containerId, documents, limit = null) {
-  const container = document.getElementById(containerId);
-  container.replaceChildren();
+    const container = document.getElementById(containerId);
 
-  const visible = limit
-    ? documents.slice(0, limit)
-    : documents;
+    if (!container) return;
 
-  if (!visible.length) {
-    empty(container, 'No documents available.');
-    return;
-  }
+    container.replaceChildren();
 
-  visible.forEach(doc => {
-    const id = docId(doc);
-    const status = doc.access_status || 'accessible';
+    const visible = limit
+        ? documents.slice(0, limit)
+        : documents;
 
-    const row = document.createElement('div');
-    row.className = 'document-item';
-
-    const info = document.createElement('div');
-    info.className = 'document-row-info';
-
-    const name = document.createElement('strong');
-    name.textContent = doc.filename || 'Untitled document';
-
-    const meta = document.createElement('p');
-    meta.className = 'muted-paragraph';
-
-    meta.textContent =
-      `Division: ${doc.division || 'Unknown'} · ` +
-      `Access: ${status}` +
-      (doc.metadata?.category
-        ? ` · Category: ${doc.metadata.category}`
-        : '');
-
-    info.append(name, meta);
-
-    const actions = document.createElement('div');
-    actions.className = 'document-row-actions';
-
-    if (status === 'accessible' || status === 'approved') {
-      const view = document.createElement('button');
-      view.textContent = 'View Details';
-      view.disabled = !id;
-      view.onclick = () => openDocumentDetails(id);
-
-      const download = document.createElement('button');
-      download.textContent = 'Download';
-      download.disabled = !id;
-      download.onclick = () => downloadDocument(id, doc.filename);
-
-      actions.append(view, download);
-
-    } else if (status === 'pending') {
-      const pending = document.createElement('button');
-      pending.textContent = 'Pending Approval';
-      pending.disabled = true;
-      actions.append(pending);
-
-    } else {
-      const request = document.createElement('button');
-      request.textContent = 'Request Access';
-      request.disabled = !id;
-      request.onclick = () => requestDocumentAccess(id, request);
-
-      actions.append(request);
+    if (!visible.length) {
+        empty(container, "No documents available.");
+        return;
     }
 
-    row.append(info, actions);
-    container.append(row);
-  });
+    visible.forEach(doc => {
+        const id = docId(doc);
+        const status = doc.access_status || "accessible";
+
+        const row = document.createElement("div");
+        row.className = "document-item";
+
+        const info = document.createElement("div");
+        info.className = "document-row-info";
+
+        const name = document.createElement("strong");
+        name.textContent = doc.filename || "Untitled document";
+
+        const meta = document.createElement("p");
+        meta.className = "muted-paragraph";
+
+        meta.textContent =
+            `Division: ${doc.division || "Unknown"} | ` +
+            `Access: ${status}` +
+            (doc.metadata?.category
+                ? ` | Category: ${doc.metadata.category}`
+                : "");
+
+        info.append(name, meta);
+
+        const actions = document.createElement("div");
+        actions.className = "document-row-actions";
+
+        if (status === "accessible" || status === "approved") {
+            const view = document.createElement("button");
+            view.textContent = "View Details";
+            view.disabled = !id;
+            view.onclick = () => openDocumentDetails(id);
+
+            const download = document.createElement("button");
+            download.textContent = "Download";
+            download.disabled = !id;
+
+            download.onclick = () =>
+                downloadDocument(id, doc.filename);
+
+            actions.append(view, download);
+
+        } else if (status === "pending") {
+            const pending = document.createElement("button");
+            pending.textContent = "Pending Approval";
+            pending.disabled = true;
+
+            actions.append(pending);
+
+        } else {
+            const request = document.createElement("button");
+            request.textContent = "Request Access";
+            request.disabled = !id;
+
+            request.onclick = () =>
+                requestDocumentAccess(id, request);
+
+            actions.append(request);
+        }
+
+        // The backend provides can_delete.
+        // Do not infer ownership from division or filename.
+        if (id && canDeleteDocument(doc)) {
+            actions.append(
+                createDeleteButton(id, doc.filename)
+            );
+        }
+
+        row.append(info, actions);
+        container.append(row);
+    });
 }
 
 // =====================================
@@ -212,30 +524,31 @@ function renderDocuments(containerId, documents, limit = null) {
 // =====================================
 
 async function requestDocumentAccess(id, button) {
-  button.disabled = true;
-  button.textContent = 'Requesting...';
+    button.disabled = true;
+    button.textContent = "Requesting...";
 
-  try {
-    await apiRequest('/access/request', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        doc_id: id
-      })
-    });
+    try {
+        await apiRequest("/access/request", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+                doc_id: id
+            })
+        });
 
-    button.textContent = 'Pending Approval';
+        button.textContent = "Pending Approval";
 
-    await loadDocuments();
+        await loadDocuments();
 
-    showMessage('Access request submitted successfully!');
-  } catch (error) {
-    button.disabled = false;
-    button.textContent = 'Request Access';
-    showMessage(error.message, true);
-  }
+        showMessage("Access request submitted successfully!");
+
+    } catch (error) {
+        button.disabled = false;
+        button.textContent = "Request Access";
+        showMessage(error.message, true);
+    }
 }
 
 // =====================================
@@ -243,32 +556,34 @@ async function requestDocumentAccess(id, button) {
 // =====================================
 
 async function loadOverview() {
-  try {
-    const docs = docsFrom(
-      await apiRequest('/documents/')
-    );
+    try {
+        const docs = docsFrom(
+            await apiRequest("/documents/")
+        );
 
-    document.getElementById('totalDocuments').textContent =
-      docs.length;
+        document.getElementById("totalDocuments").textContent =
+            docs.length;
 
-    renderDocuments('recentDocuments', docs, 5);
-  } catch (error) {
-    showMessage(error.message, true);
-  }
+        renderDocuments("recentDocuments", docs, 5);
 
-  try {
-    const data = await apiRequest('/access/pending');
+    } catch (error) {
+        showMessage(error.message, true);
+    }
 
-    const requests = Array.isArray(data)
-      ? data
-      : data.requests || [];
+    try {
+        const data = await apiRequest("/access/pending");
 
-    document.getElementById('pendingCount').textContent =
-      requests.length;
-  } catch (error) {
-    document.getElementById('pendingCount').textContent = '—';
-    showMessage(error.message, true);
-  }
+        const requests = Array.isArray(data)
+            ? data
+            : data.requests || [];
+
+        document.getElementById("pendingCount").textContent =
+            requests.length;
+
+    } catch (error) {
+        document.getElementById("pendingCount").textContent = "-";
+        console.warn("Pending request count unavailable:", error.message);
+    }
 }
 
 // =====================================
@@ -276,214 +591,220 @@ async function loadOverview() {
 // =====================================
 
 function buildDocumentFilterPath() {
-  const field = document.getElementById('filterField').value.trim();
-  const value = document.getElementById('filterValue').value.trim();
+    const field =
+        document.getElementById("filterField").value.trim();
 
-  if (!field && !value) {
-    return '/documents/';
-  }
+    const value =
+        document.getElementById("filterValue").value.trim();
 
-  if (!field || !value) {
-    throw new Error(
-      'Enter both a metadata field and its value.'
-    );
-  }
+    if (!field && !value) {
+        return "/documents/";
+    }
 
-  if (
-    field.startsWith('$') ||
-    field.includes('.') ||
-    ['__proto__', 'constructor', 'prototype'].includes(field)
-  ) {
-    throw new Error('Invalid metadata field name.');
-  }
+    if (!field || !value) {
+        throw new Error(
+            "Enter both a metadata field and its value."
+        );
+    }
 
-  const params = new URLSearchParams();
-  params.append(field, value);
+    if (
+        field.startsWith("$") ||
+        field.includes(".") ||
+        ["__proto__", "constructor", "prototype"].includes(field)
+    ) {
+        throw new Error("Invalid metadata field name.");
+    }
 
-  return '/documents/?' + params.toString();
+    const params = new URLSearchParams();
+    params.append(field, value);
+
+    return "/documents/?" + params.toString();
 }
 
 async function loadDocuments() {
-  const version = ++documentsVersion;
-  const container = document.getElementById('documentList');
-  const status = document.getElementById('filterStatus');
+    const version = ++documentsVersion;
 
-  empty(container, 'Loading documents...');
+    const container = document.getElementById("documentList");
+    const status = document.getElementById("filterStatus");
 
-  try {
-    const filterPath = buildDocumentFilterPath();
+    empty(container, "Loading documents...");
 
-    // Discover documents from all divisions when no
-    // metadata filter is applied.
-    // Filtered results use the existing protected API.
-    const path = filterPath === '/documents/'
-      ? '/documents/discover'
-      : filterPath;
+    try {
+        const filterPath = buildDocumentFilterPath();
 
-    const data = await apiRequest(path);
+        const path = filterPath === "/documents/"
+            ? "/documents/discover"
+            : filterPath;
 
-    if (version !== documentsVersion) return;
+        const data = await apiRequest(path);
 
-    const documents = docsFrom(data);
+        if (version !== documentsVersion) return;
 
-    renderDocuments('documentList', documents);
+        const documents = docsFrom(data);
 
-    status.textContent =
-      `Showing ${documents.length} document(s).`;
+        renderDocuments("documentList", documents);
 
-  } catch (error) {
-    if (version !== documentsVersion) return;
+        status.textContent =
+            `Showing ${documents.length} document(s).`;
 
-    empty(container, 'Unable to load documents.');
+    } catch (error) {
+        if (version !== documentsVersion) return;
 
-    status.textContent = 'Unable to load documents.';
-    showMessage(error.message, true);
-  }
+        empty(container, "Unable to load documents.");
+
+        status.textContent = "Unable to load documents.";
+        showMessage(error.message, true);
+    }
 }
 
 function clearDocumentFilters() {
-  document.getElementById('filterField').value = '';
-  document.getElementById('filterValue').value = '';
-  loadDocuments();
+    document.getElementById("filterField").value = "";
+    document.getElementById("filterValue").value = "";
+    loadDocuments();
 }
 
-document.getElementById('documentFilterForm')
-  .addEventListener('submit', event => {
-    event.preventDefault();
-    loadDocuments();
-  });
+document.getElementById("documentFilterForm")
+    .addEventListener("submit", event => {
+        event.preventDefault();
+        loadDocuments();
+    });
 
 // =====================================
 // UPLOAD DOCUMENT
 // =====================================
 
-document.getElementById('uploadForm')
-  .addEventListener('submit', async event => {
-    event.preventDefault();
+document.getElementById("uploadForm")
+    .addEventListener("submit", async event => {
+        event.preventDefault();
 
-    const file =
-      document.getElementById('documentFile').files[0];
+        const file =
+            document.getElementById("documentFile").files[0];
 
-    if (!file) {
-      return showMessage('Choose a file.', true);
-    }
+        if (!file) {
+            return showMessage("Choose a file.", true);
+        }
 
-    if (file.size > 15 * 1024 * 1024) {
-      return showMessage('File exceeds 15 MB.', true);
-    }
+        if (file.size > 15 * 1024 * 1024) {
+            return showMessage("File exceeds 15 MB.", true);
+        }
 
-    const form = new FormData();
+        const form = new FormData();
 
-    form.append('file', file);
+        form.append("file", file);
 
-    form.append('metadata', JSON.stringify({
-      category:
-        document.getElementById('category').value.trim() ||
-        'General'
-    }));
+        form.append("metadata", JSON.stringify({
+            category:
+                document.getElementById("category").value.trim() ||
+                "General"
+        }));
 
-    const button =
-      event.target.querySelector('button[type=submit]');
+        const button =
+            event.target.querySelector("button[type=submit]");
 
-    button.disabled = true;
+        button.disabled = true;
 
-    try {
-      await apiRequest('/documents/upload', {
-        method: 'POST',
-        body: form
-      });
+        try {
+            await apiRequest("/documents/upload", {
+                method: "POST",
+                body: form
+            });
 
-      event.target.reset();
+            event.target.reset();
 
-      showMessage('Document uploaded successfully.');
-    } catch (error) {
-      showMessage(error.message, true);
-    } finally {
-      button.disabled = false;
-    }
-  });
+            showMessage("Document uploaded successfully.");
+
+        } catch (error) {
+            showMessage(error.message, true);
+
+        } finally {
+            button.disabled = false;
+        }
+    });
 
 // =====================================
 // OCR AND DOCUMENT SEARCH
 // =====================================
 
 async function searchDocuments() {
-  const q =
-    document.getElementById('searchInput').value.trim();
+    const q =
+        document.getElementById("searchInput").value.trim();
 
-  if (!q) {
-    return showMessage('Enter a search term.', true);
-  }
+    if (!q) {
+        return showMessage("Enter a search term.", true);
+    }
 
-  try {
-    const docs = docsFrom(
-      await apiRequest(
-        '/search?q=' + encodeURIComponent(q)
-      )
-    );
+    try {
+        const docs = docsFrom(
+            await apiRequest(
+                "/search?q=" + encodeURIComponent(q)
+            )
+        );
 
-    renderDocuments('searchResults', docs);
+        renderDocuments("searchResults", docs);
 
-    showMessage(`${docs.length} document(s) found.`);
-  } catch (error) {
-    showMessage(error.message, true);
-  }
+        showMessage(`${docs.length} document(s) found.`);
+
+    } catch (error) {
+        showMessage(error.message, true);
+    }
 }
 
-document.getElementById('searchInput')
-  .addEventListener('keydown', event => {
-    if (event.key === 'Enter') {
-      searchDocuments();
-    }
-  });
+document.getElementById("searchInput")
+    .addEventListener("keydown", event => {
+        if (event.key === "Enter") {
+            event.preventDefault();
+            searchDocuments();
+        }
+    });
 
 // =====================================
 // SECURE DOCUMENT DOWNLOAD
 // =====================================
 
-async function downloadDocument(id, filename = 'document') {
-  try {
-    const response = await fetch(
-      `${API_BASE}/documents/${id}/download`,
-      {
-        headers: {
-          Authorization: `Bearer ${token}`
+async function downloadDocument(id, filename = "document") {
+    try {
+        const response = await fetch(
+            `${API_BASE}/documents/${encodeURIComponent(id)}/download`,
+            {
+                headers: {
+                    Authorization: `Bearer ${token}`
+                }
+            }
+        );
+
+        if (!response.ok) {
+            if ([401, 422].includes(response.status)) {
+                return logout();
+            }
+
+            const error =
+                await response.json().catch(() => ({}));
+
+            throw new Error(
+                error.error || "Download failed."
+            );
         }
-      }
-    );
 
-    if (!response.ok) {
-      if ([401, 422].includes(response.status)) {
-        return logout();
-      }
+        const url = URL.createObjectURL(
+            await response.blob()
+        );
 
-      const error =
-        await response.json().catch(() => ({}));
+        const a = document.createElement("a");
 
-      throw new Error(
-        error.error || 'Download failed.'
-      );
+        a.href = url;
+        a.download = filename;
+
+        document.body.append(a);
+        a.click();
+        a.remove();
+
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+
+        showMessage("Download started.");
+
+    } catch (error) {
+        showMessage(error.message, true);
     }
-
-    const url = URL.createObjectURL(
-      await response.blob()
-    );
-
-    const a = document.createElement('a');
-
-    a.href = url;
-    a.download = filename;
-
-    document.body.append(a);
-    a.click();
-    a.remove();
-
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
-
-    showMessage('Download started.');
-  } catch (error) {
-    showMessage(error.message, true);
-  }
 }
 
 // =====================================
@@ -491,136 +812,164 @@ async function downloadDocument(id, filename = 'document') {
 // =====================================
 
 function addDetail(container, label, value) {
-  const row = document.createElement('div');
-  row.className = 'detail-field';
+    const row = document.createElement("div");
+    row.className = "detail-field";
 
-  const key = document.createElement('span');
-  key.className = 'detail-field-label';
-  key.textContent = label;
+    const key = document.createElement("span");
+    key.className = "detail-field-label";
+    key.textContent = label;
 
-  const val = document.createElement('span');
-  val.className = 'detail-field-value';
+    const val = document.createElement("span");
+    val.className = "detail-field-value";
 
-  val.textContent =
-    value == null || value === ''
-      ? 'Not available'
-      : typeof value === 'object'
-        ? JSON.stringify(value)
-        : String(value);
+    val.textContent =
+        value == null || value === ""
+            ? "Not available"
+            : typeof value === "object"
+                ? JSON.stringify(value)
+                : String(value);
 
-  row.append(key, val);
-  container.append(row);
+    row.append(key, val);
+    container.append(row);
 }
 
 async function openDocumentDetails(id) {
-  showSection('details');
+    showSection("details");
 
-  const version = detailsVersion;
-  currentDetailsId = id;
+    const version = detailsVersion;
+    currentDetailsId = id;
 
-  document.getElementById('detailFilename').textContent =
-    'Loading document...';
+    document.getElementById("detailFilename").textContent =
+        "Loading document...";
 
-  document.getElementById('detailDivision').textContent = '';
+    document.getElementById("detailDivision").textContent = "";
 
-  ['documentInfo', 'documentMetadata'].forEach(key => {
-    document.getElementById(key).replaceChildren();
-  });
+    ["documentInfo", "documentMetadata"].forEach(key => {
+        document.getElementById(key).replaceChildren();
+    });
 
-  document.getElementById('documentOCR').textContent = '';
+    document.getElementById("documentOCR").textContent = "";
 
-  const download =
-    document.getElementById('detailDownloadButton');
+    const download =
+        document.getElementById("detailDownloadButton");
 
-  const edit =
-    document.getElementById('editDetailsMetadataButton');
+    const edit =
+        document.getElementById("editDetailsMetadataButton");
 
-  download.disabled = true;
-  edit.disabled = true;
+    const deleteButton =
+        document.getElementById("detailDeleteButton");
 
-  const status = document.getElementById('previewStatus');
+    download.disabled = true;
+    edit.disabled = true;
 
-  status.hidden = false;
-  status.textContent = 'Loading preview...';
-
-  try {
-    const doc = await apiRequest(`/documents/${id}`);
-
-    if (version !== detailsVersion) return;
-
-    document.getElementById('detailFilename').textContent =
-      doc.filename || 'Untitled document';
-
-    document.getElementById('detailDivision').textContent =
-      `Division: ${doc.division || 'Unknown'}`;
-
-    const info = document.getElementById('documentInfo');
-
-    addDetail(info, 'Filename', doc.filename);
-    addDetail(info, 'Division', doc.division);
-    addDetail(info, 'Document ID', doc.document_id);
-    addDetail(info, 'Owner ID', doc.owner_id);
-
-    addDetail(
-      info,
-      'Uploaded At',
-      doc.created_at
-        ? new Date(doc.created_at).toLocaleString()
-        : null
-    );
-
-    const metadata =
-      document.getElementById('documentMetadata');
-
-    const entries = Object.entries(
-      doc.metadata || {}
-    );
-
-    if (!entries.length) {
-      addDetail(
-        metadata,
-        'Metadata',
-        'No metadata available'
-      );
-    } else {
-      entries.forEach(([key, value]) => {
-        addDetail(metadata, key, value);
-      });
+    if (deleteButton) {
+        deleteButton.hidden = true;
+        deleteButton.disabled = true;
+        deleteButton.onclick = null;
     }
 
-    document.getElementById('documentOCR').textContent =
-      doc.extracted_text ||
-      'No extracted text available.';
-
-    download.disabled = false;
-    download.onclick = () =>
-      downloadDocument(id, doc.filename);
-
-    edit.disabled = false;
-    edit.onclick = () => {
-      document.getElementById(
-        'metadataDocumentSelect'
-      ).dataset.preselect = id;
-
-      showSection('metadata');
-    };
-
-    await loadPreview(
-      id,
-      doc.filename || '',
-      version
-    );
-  } catch (error) {
-    if (version !== detailsVersion) return;
-
-    document.getElementById('detailFilename').textContent =
-      'Unable to load document';
+    const status = document.getElementById("previewStatus");
 
     status.hidden = false;
-    status.textContent = 'Preview unavailable.';
+    status.textContent = "Loading preview...";
 
-    showMessage(error.message, true);
-  }
+    try {
+        const doc = await apiRequest(
+            `/documents/${encodeURIComponent(id)}`
+        );
+
+        if (version !== detailsVersion) return;
+
+        document.getElementById("detailFilename").textContent =
+            doc.filename || "Untitled document";
+
+        document.getElementById("detailDivision").textContent =
+            `Division: ${doc.division || "Unknown"}`;
+
+        const info = document.getElementById("documentInfo");
+
+        addDetail(info, "Filename", doc.filename);
+        addDetail(info, "Division", doc.division);
+        addDetail(info, "Document ID", doc.document_id);
+        addDetail(info, "Owner ID", doc.owner_id);
+
+        addDetail(
+            info,
+            "Uploaded At",
+            doc.created_at
+                ? new Date(doc.created_at).toLocaleString()
+                : null
+        );
+
+        const metadata =
+            document.getElementById("documentMetadata");
+
+        const entries = Object.entries(
+            doc.metadata || {}
+        );
+
+        if (!entries.length) {
+            addDetail(
+                metadata,
+                "Metadata",
+                "No metadata available"
+            );
+
+        } else {
+            entries.forEach(([key, value]) => {
+                addDetail(metadata, key, value);
+            });
+        }
+
+        document.getElementById("documentOCR").textContent =
+            doc.extracted_text ||
+            "No extracted text available.";
+
+        download.disabled = false;
+        download.onclick = () =>
+            downloadDocument(id, doc.filename);
+
+        edit.disabled = false;
+        edit.onclick = () => {
+            document.getElementById(
+                "metadataDocumentSelect"
+            ).dataset.preselect = id;
+
+            showSection("metadata");
+        };
+
+        // Backend-authorized Delete button.
+        if (deleteButton && canDeleteDocument(doc)) {
+            deleteButton.hidden = false;
+            deleteButton.disabled = false;
+            deleteButton.style.color = "#f87171";
+            deleteButton.style.borderColor = "#f87171";
+
+            deleteButton.onclick = () =>
+                deleteDocument(
+                    id,
+                    doc.filename,
+                    deleteButton
+                );
+        }
+
+        await loadPreview(
+            id,
+            doc.filename || "",
+            version
+        );
+
+    } catch (error) {
+        if (version !== detailsVersion) return;
+
+        document.getElementById("detailFilename").textContent =
+            "Unable to load document";
+
+        status.hidden = false;
+        status.textContent = "Preview unavailable.";
+
+        showMessage(error.message, true);
+    }
 }
 
 // =====================================
@@ -628,156 +977,159 @@ async function openDocumentDetails(id) {
 // =====================================
 
 async function loadPreview(id, filename, version) {
-  const status =
-    document.getElementById('previewStatus');
+    const status =
+        document.getElementById("previewStatus");
 
-  if (!filename.toLowerCase().endsWith('.pdf')) {
-    status.textContent =
-      'Inline preview is available for PDF files only.';
-    return;
-  }
-
-  try {
-    const response = await fetch(
-      `${API_BASE}/documents/${id}/preview`,
-      {
-        headers: {
-          Authorization: `Bearer ${token}`
-        }
-      }
-    );
-
-    if (!response.ok) {
-      if ([401, 422].includes(response.status)) {
-        return logout();
-      }
-
-      const error =
-        await response.json().catch(() => ({}));
-
-      throw new Error(
-        error.error || 'Preview unavailable.'
-      );
+    if (!filename.toLowerCase().endsWith(".pdf")) {
+        status.textContent =
+            "Inline preview is available for PDF files only.";
+        return;
     }
 
-    const blob = await response.blob();
+    try {
+        const response = await fetch(
+            `${API_BASE}/documents/${encodeURIComponent(id)}/preview`,
+            {
+                headers: {
+                    Authorization: `Bearer ${token}`
+                }
+            }
+        );
 
-    if (version !== detailsVersion) return;
+        if (!response.ok) {
+            if ([401, 422].includes(response.status)) {
+                return logout();
+            }
 
-    clearPreview();
+            const error =
+                await response.json().catch(() => ({}));
 
-    previewUrl = URL.createObjectURL(blob);
+            throw new Error(
+                error.error || "Preview unavailable."
+            );
+        }
 
-    const frame =
-      document.getElementById('pdfPreview');
+        const blob = await response.blob();
 
-    frame.src = previewUrl;
-    frame.hidden = false;
+        if (version !== detailsVersion) return;
 
-    status.hidden = true;
-  } catch (error) {
-    if (version !== detailsVersion) return;
+        clearPreview();
 
-    status.hidden = false;
-    status.textContent = error.message;
-  }
+        previewUrl = URL.createObjectURL(blob);
+
+        const frame =
+            document.getElementById("pdfPreview");
+
+        frame.src = previewUrl;
+        frame.hidden = false;
+
+        status.hidden = true;
+
+    } catch (error) {
+        if (version !== detailsVersion) return;
+
+        status.hidden = false;
+        status.textContent = error.message;
+    }
 }
 
 // =====================================
-// ACCESS REQUEST INBOX
+// DOCUMENT ACCESS REQUEST INBOX
 // =====================================
 
 async function loadPendingRequests() {
-  const container =
-    document.getElementById('requestList');
+    const container =
+        document.getElementById("requestList");
 
-  empty(container, 'Loading pending requests...');
+    empty(container, "Loading pending requests...");
 
-  try {
-    const data =
-      await apiRequest('/access/pending');
+    try {
+        const data =
+            await apiRequest("/access/pending");
 
-    const requests = Array.isArray(data)
-      ? data
-      : data.requests || [];
+        const requests = Array.isArray(data)
+            ? data
+            : data.requests || [];
 
-    container.replaceChildren();
+        container.replaceChildren();
 
-    if (!requests.length) {
-      return empty(
-        container,
-        'No pending requests.'
-      );
+        if (!requests.length) {
+            return empty(
+                container,
+                "No pending requests."
+            );
+        }
+
+        requests.forEach(request => {
+            const id =
+                request.request_id ||
+                request._id ||
+                request.id;
+
+            const row = document.createElement("div");
+            row.className = "document-item";
+
+            const label = document.createElement("span");
+
+            label.textContent =
+                `Request ${id || ""} | ` +
+                `${request.status || "pending"}`;
+
+            const actions = document.createElement("div");
+            actions.className = "document-row-actions";
+
+            ["approved", "rejected"].forEach(decision => {
+                const button = document.createElement("button");
+
+                button.textContent =
+                    decision === "approved"
+                        ? "Approve"
+                        : "Reject";
+
+                button.disabled = !id;
+
+                button.onclick = () =>
+                    decideRequest(id, decision);
+
+                actions.append(button);
+            });
+
+            row.append(label, actions);
+            container.append(row);
+        });
+
+    } catch (error) {
+        empty(
+            container,
+            "Unable to load requests."
+        );
+
+        showMessage(error.message, true);
     }
-
-    requests.forEach(request => {
-      const id =
-        request.request_id ||
-        request._id ||
-        request.id;
-
-      const row = document.createElement('div');
-      row.className = 'document-item';
-
-      const label = document.createElement('span');
-
-      label.textContent =
-        `Request ${id || ''} · ` +
-        `${request.status || 'pending'}`;
-
-      const actions = document.createElement('div');
-      actions.className = 'document-row-actions';
-
-      ['approved', 'rejected'].forEach(decision => {
-        const button = document.createElement('button');
-
-        button.textContent =
-          decision === 'approved'
-            ? 'Approve'
-            : 'Reject';
-
-        button.disabled = !id;
-
-        button.onclick = () =>
-          decideRequest(id, decision);
-
-        actions.append(button);
-      });
-
-      row.append(label, actions);
-      container.append(row);
-    });
-  } catch (error) {
-    empty(
-      container,
-      'Unable to load requests.'
-    );
-
-    showMessage(error.message, true);
-  }
 }
 
 async function decideRequest(id, decision) {
-  try {
-    await apiRequest(
-      `/access/${id}/decision`,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          decision
-        })
-      }
-    );
+    try {
+        await apiRequest(
+            `/access/${encodeURIComponent(id)}/decision`,
+            {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify({
+                    decision
+                })
+            }
+        );
 
-    await loadPendingRequests();
+        await loadPendingRequests();
 
-    showMessage(`Request ${decision}.`);
-  } catch (error) {
-    showMessage(error.message, true);
-  }
+        showMessage(`Request ${decision}.`);
+
+    } catch (error) {
+        showMessage(error.message, true);
+    }
 }
 
 // =====================================
@@ -785,307 +1137,314 @@ async function decideRequest(id, decision) {
 // =====================================
 
 async function loadMetadataDocuments(preselect = null) {
-  const version = ++metadataVersion;
+    const version = ++metadataVersion;
 
-  const select =
-    document.getElementById('metadataDocumentSelect');
+    const select =
+        document.getElementById("metadataDocumentSelect");
 
-  const chosen =
-    preselect ||
-    select.dataset.preselect ||
-    select.value;
-
-  select.replaceChildren(
-    new Option('Loading documents...', '')
-  );
-
-  setMetadataEditing(false);
-
-  document.getElementById(
-    'metadataFields'
-  ).replaceChildren();
-
-  document.getElementById(
-    'metadataEditorStatus'
-  ).textContent = 'Loading documents...';
-
-  try {
-    const docs = docsFrom(
-      await apiRequest('/documents/')
-    );
-
-    if (version !== metadataVersion) return;
+    const chosen =
+        preselect ||
+        select.dataset.preselect ||
+        select.value;
 
     select.replaceChildren(
-      new Option('Select a document', '')
+        new Option("Loading documents...", "")
     );
 
-    docs.forEach(doc => {
-      const id = docId(doc);
+    setMetadataEditing(false);
 
-      if (id) {
-        select.add(
-          new Option(
-            `${doc.filename || 'Document'} ` +
-            `(${doc.division || 'Unknown'})`,
-            id
-          )
-        );
-      }
-    });
-
-    if (
-      chosen &&
-      docs.some(doc => docId(doc) === chosen)
-    ) {
-      select.value = chosen;
-    }
-
-    delete select.dataset.preselect;
-
-    if (select.value) {
-      await loadMetadataForSelection();
-    } else {
-      document.getElementById(
-        'metadataEditorStatus'
-      ).textContent = docs.length
-        ? 'Choose a document to edit its metadata.'
-        : 'No accessible documents.';
-    }
-  } catch (error) {
     document.getElementById(
-      'metadataEditorStatus'
-    ).textContent = error.message;
+        "metadataFields"
+    ).replaceChildren();
 
-    showMessage(error.message, true);
-  }
+    document.getElementById(
+        "metadataEditorStatus"
+    ).textContent = "Loading documents...";
+
+    try {
+        const docs = docsFrom(
+            await apiRequest("/documents/")
+        );
+
+        if (version !== metadataVersion) return;
+
+        select.replaceChildren(
+            new Option("Select a document", "")
+        );
+
+        docs.forEach(doc => {
+            const id = docId(doc);
+
+            if (id) {
+                select.add(
+                    new Option(
+                        `${doc.filename || "Document"} ` +
+                        `(${doc.division || "Unknown"})`,
+                        id
+                    )
+                );
+            }
+        });
+
+        if (
+            chosen &&
+            docs.some(doc => docId(doc) === chosen)
+        ) {
+            select.value = chosen;
+        }
+
+        delete select.dataset.preselect;
+
+        if (select.value) {
+            await loadMetadataForSelection();
+
+        } else {
+            document.getElementById(
+                "metadataEditorStatus"
+            ).textContent = docs.length
+                ? "Choose a document to edit its metadata."
+                : "No accessible documents.";
+        }
+
+    } catch (error) {
+        document.getElementById(
+            "metadataEditorStatus"
+        ).textContent = error.message;
+
+        showMessage(error.message, true);
+    }
 }
 
 function setMetadataEditing(enabled) {
-  document.getElementById(
-    'addMetadataField'
-  ).disabled = !enabled;
+    document.getElementById(
+        "addMetadataField"
+    ).disabled = !enabled;
 
-  document.getElementById(
-    'saveMetadataButton'
-  ).disabled = !enabled;
+    document.getElementById(
+        "saveMetadataButton"
+    ).disabled = !enabled;
 }
 
 document.getElementById(
-  'metadataDocumentSelect'
+    "metadataDocumentSelect"
 ).addEventListener(
-  'change',
-  loadMetadataForSelection
+    "change",
+    loadMetadataForSelection
 );
 
 async function loadMetadataForSelection() {
-  const version = ++metadataVersion;
+    const version = ++metadataVersion;
 
-  const id = document.getElementById(
-    'metadataDocumentSelect'
-  ).value;
+    const id = document.getElementById(
+        "metadataDocumentSelect"
+    ).value;
 
-  selectedMetadataDocument = null;
-  setMetadataEditing(false);
+    selectedMetadataDocument = null;
+    setMetadataEditing(false);
 
-  const fields =
-    document.getElementById('metadataFields');
+    const fields =
+        document.getElementById("metadataFields");
 
-  fields.replaceChildren();
+    fields.replaceChildren();
 
-  const status = document.getElementById(
-    'metadataEditorStatus'
-  );
-
-  if (!id) {
-    status.textContent = 'Choose a document.';
-    return;
-  }
-
-  status.textContent = 'Loading metadata...';
-
-  try {
-    const doc =
-      await apiRequest(`/documents/${id}`);
-
-    if (version !== metadataVersion) return;
-
-    selectedMetadataDocument = id;
-
-    const entries = Object.entries(
-      doc.metadata || {}
+    const status = document.getElementById(
+        "metadataEditorStatus"
     );
 
-    entries.forEach(([key, value]) => {
-      addMetadataRow(
-        key,
-        typeof value === 'string'
-          ? value
-          : JSON.stringify(value)
-      );
-    });
+    if (!id) {
+        status.textContent = "Choose a document.";
+        return;
+    }
 
-    status.textContent =
-      `Editing: ${doc.filename}. ` +
-      'Only the document owner can save changes.';
+    status.textContent = "Loading metadata...";
 
-    setMetadataEditing(true);
-  } catch (error) {
-    if (version !== metadataVersion) return;
+    try {
+        const doc =
+            await apiRequest(
+                `/documents/${encodeURIComponent(id)}`
+            );
 
-    status.textContent = error.message;
-    showMessage(error.message, true);
-  }
+        if (version !== metadataVersion) return;
+
+        selectedMetadataDocument = id;
+
+        const entries = Object.entries(
+            doc.metadata || {}
+        );
+
+        entries.forEach(([key, value]) => {
+            addMetadataRow(
+                key,
+                typeof value === "string"
+                    ? value
+                    : JSON.stringify(value)
+            );
+        });
+
+        status.textContent =
+            `Editing: ${doc.filename}. ` +
+            "Only the document owner can save changes.";
+
+        setMetadataEditing(true);
+
+    } catch (error) {
+        if (version !== metadataVersion) return;
+
+        status.textContent = error.message;
+        showMessage(error.message, true);
+    }
 }
 
-function addMetadataRow(key = '', value = '') {
-  if (
-    !selectedMetadataDocument &&
-    !document.getElementById(
-      'metadataDocumentSelect'
-    ).value
-  ) {
-    return;
-  }
+function addMetadataRow(key = "", value = "") {
+    if (
+        !selectedMetadataDocument &&
+        !document.getElementById(
+            "metadataDocumentSelect"
+        ).value
+    ) {
+        return;
+    }
 
-  const row = document.createElement('div');
-  row.className = 'metadata-row';
+    const row = document.createElement("div");
+    row.className = "metadata-row";
 
-  const name = document.createElement('input');
-  name.type = 'text';
-  name.className = 'metadata-key';
-  name.placeholder = 'Field name (e.g. Priority)';
-  name.value = key;
+    const name = document.createElement("input");
+    name.type = "text";
+    name.className = "metadata-key";
+    name.placeholder = "Field name (e.g. Priority)";
+    name.value = key;
 
-  name.setAttribute(
-    'aria-label',
-    'Metadata field name'
-  );
+    name.setAttribute(
+        "aria-label",
+        "Metadata field name"
+    );
 
-  const val = document.createElement('input');
-  val.type = 'text';
-  val.className = 'metadata-value';
-  val.placeholder = 'Value (e.g. High)';
-  val.value = value;
+    const val = document.createElement("input");
+    val.type = "text";
+    val.className = "metadata-value";
+    val.placeholder = "Value (e.g. High)";
+    val.value = value;
 
-  val.setAttribute(
-    'aria-label',
-    'Metadata value'
-  );
+    val.setAttribute(
+        "aria-label",
+        "Metadata value"
+    );
 
-  const remove = document.createElement('button');
-  remove.type = 'button';
-  remove.textContent = 'Remove';
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.textContent = "Remove";
 
-  remove.onclick = () => row.remove();
+    remove.onclick = () => row.remove();
 
-  row.append(name, val, remove);
+    row.append(name, val, remove);
 
-  document.getElementById(
-    'metadataFields'
-  ).append(row);
+    document.getElementById(
+        "metadataFields"
+    ).append(row);
 }
 
 async function saveDocumentMetadata() {
-  if (!selectedMetadataDocument) {
-    return showMessage(
-      'Select a document first.',
-      true
-    );
-  }
-
-  const metadata = {};
-
-  const rows = document.querySelectorAll(
-    '#metadataFields .metadata-row'
-  );
-
-  for (const row of rows) {
-    const key = row.querySelector(
-      '.metadata-key'
-    ).value.trim();
-
-    const value = row.querySelector(
-      '.metadata-value'
-    ).value.trim();
-
-    if (!key) {
-      return showMessage(
-        'Every metadata row needs a field name. ' +
-        'Remove empty rows.',
-        true
-      );
+    if (!selectedMetadataDocument) {
+        return showMessage(
+            "Select a document first.",
+            true
+        );
     }
 
-    if (
-      key.startsWith('$') ||
-      key.includes('.')
-    ) {
-      return showMessage(
-        'Field names cannot start with $ or contain a dot.',
-        true
-      );
-    }
+    const metadata = {};
 
-    if (
-      Object.prototype.hasOwnProperty.call(
-        metadata,
-        key
-      )
-    ) {
-      return showMessage(
-        `Duplicate field: ${key}`,
-        true
-      );
-    }
-
-    if (
-      ['__proto__', 'constructor', 'prototype'].includes(key)
-    ) {
-      return showMessage(
-        `Reserved field name: ${key}`,
-        true
-      );
-    }
-
-    metadata[key] = value;
-  }
-
-  const button = document.getElementById(
-    'saveMetadataButton'
-  );
-
-  button.disabled = true;
-  button.textContent = 'Saving...';
-
-  try {
-    await apiRequest(
-      `/documents/${selectedMetadataDocument}/metadata`,
-      {
-        method: 'PATCH',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          metadata
-        })
-      }
+    const rows = document.querySelectorAll(
+        "#metadataFields .metadata-row"
     );
 
-    showMessage(
-      'Metadata saved successfully!'
+    for (const row of rows) {
+        const key = row.querySelector(
+            ".metadata-key"
+        ).value.trim();
+
+        const value = row.querySelector(
+            ".metadata-value"
+        ).value.trim();
+
+        if (!key) {
+            return showMessage(
+                "Every metadata row needs a field name. " +
+                "Remove empty rows.",
+                true
+            );
+        }
+
+        if (
+            key.startsWith("$") ||
+            key.includes(".")
+        ) {
+            return showMessage(
+                "Field names cannot start with $ or contain a dot.",
+                true
+            );
+        }
+
+        if (
+            Object.prototype.hasOwnProperty.call(
+                metadata,
+                key
+            )
+        ) {
+            return showMessage(
+                `Duplicate field: ${key}`,
+                true
+            );
+        }
+
+        if (
+            ["__proto__", "constructor", "prototype"].includes(key)
+        ) {
+            return showMessage(
+                `Reserved field name: ${key}`,
+                true
+            );
+        }
+
+        metadata[key] = value;
+    }
+
+    const button = document.getElementById(
+        "saveMetadataButton"
     );
 
-    document.getElementById(
-      'metadataEditorStatus'
-    ).textContent =
-      'Saved. Changes are stored in MongoDB.';
-  } catch (error) {
-    showMessage(error.message, true);
-  } finally {
-    button.disabled = false;
-    button.textContent = 'Save Metadata';
-  }
+    button.disabled = true;
+    button.textContent = "Saving...";
+
+    try {
+        await apiRequest(
+            `/documents/${encodeURIComponent(selectedMetadataDocument)}/metadata`,
+            {
+                method: "PATCH",
+                headers: {
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify({
+                    metadata
+                })
+            }
+        );
+
+        showMessage(
+            "Metadata saved successfully!"
+        );
+
+        document.getElementById(
+            "metadataEditorStatus"
+        ).textContent =
+            "Saved. Changes are stored in MongoDB.";
+
+    } catch (error) {
+        showMessage(error.message, true);
+
+    } finally {
+        button.disabled = false;
+        button.textContent = "Save Metadata";
+    }
 }
 
 // =====================================
@@ -1093,10 +1452,11 @@ async function saveDocumentMetadata() {
 // =====================================
 
 if (token) {
-  showSection('overview');
+    showSection("overview");
+    setupUserApprovalsNav();
 }
 
 window.addEventListener(
-  'beforeunload',
-  clearPreview
+    "beforeunload",
+    clearPreview
 );

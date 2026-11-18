@@ -81,26 +81,31 @@ print("MongoDB connected successfully!")
 # REGISTER API BLUEPRINTS
 # ==========================================
 
+# Authentication
 app.register_blueprint(
     auth_bp,
     url_prefix="/api/auth"
 )
 
+# Document upload, list, download, delete
 app.register_blueprint(
     documents_bp,
     url_prefix="/api/documents"
 )
 
+# Cross-division access requests
 app.register_blueprint(
     access_bp,
     url_prefix="/api/access"
 )
 
+# Advanced document search
 app.register_blueprint(
     search_bp,
     url_prefix="/api/search"
 )
 
+# Admin account management
 app.register_blueprint(
     admin_bp,
     url_prefix="/api/admin"
@@ -136,6 +141,8 @@ if __name__ == "__main__":
     app.run(
         host="127.0.0.1",
         port=int(os.getenv("PORT", "5000")),
-        debug=os.getenv("FLASK_DEBUG", "false").lower() == "true",
+        debug=os.getenv(
+            "FLASK_DEBUG", "false"
+        ).lower() == "true",
         use_reloader=False
     )

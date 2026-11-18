@@ -1,5 +1,6 @@
 
 import re
+from datetime import datetime, timezone
 
 from flask import Blueprint, request, jsonify, current_app
 from flask_jwt_extended import create_access_token
@@ -15,12 +16,20 @@ auth_bp = Blueprint("auth", __name__)
 ALLOWED_DIVISIONS = {"HR", "IT", "FINANCE"}
 
 
+def normalize_division(value):
+    """Store division names consistently."""
+    if not isinstance(value, str):
+        return ""
+    return value.strip().upper()
+
+
 # ==========================================
 # REGISTER USER
 # ==========================================
 
 @auth_bp.route("/register", methods=["POST"])
 def register():
+
     data = request.get_json(silent=True)
 
     if not isinstance(data, dict):
@@ -31,7 +40,7 @@ def register():
     username = str(data.get("username") or "").strip()
     email = str(data.get("email") or "").strip().lower()
     password = data.get("password")
-    division = str(data.get("division") or "").strip().upper()
+    division = normalize_division(data.get("division"))
 
     if not username or not email or not password or not division:
         return jsonify({
@@ -43,10 +52,7 @@ def register():
             "error": "Username is too long"
         }), 400
 
-    if not re.fullmatch(
-        r"[^@\s]+@[^@\s]+\.[^@\s]+",
-        email
-    ):
+    if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email):
         return jsonify({
             "error": "Invalid email address"
         }), 400
@@ -58,7 +64,7 @@ def register():
 
     if division not in ALLOWED_DIVISIONS:
         return jsonify({
-            "error": "Invalid division"
+            "error": "Invalid division. Choose HR, IT or FINANCE."
         }), 400
 
     users = current_app.db.users
@@ -72,11 +78,13 @@ def register():
             "password": generate_password_hash(password),
             "division": division,
 
-            # Public registration never grants admin rights.
+            # Public registration cannot create administrators.
             "role": "user",
 
-            # Administrator must verify the division.
-            "approval_status": "pending"
+            # Every new account needs division admin approval.
+            "approval_status": "pending",
+
+            "created_at": datetime.now(timezone.utc)
         })
 
     except DuplicateKeyError:
@@ -87,9 +95,11 @@ def register():
     return jsonify({
         "message": (
             "Registration successful. "
-            "Your account is awaiting administrator approval."
+            "Your account is awaiting approval "
+            "from your division administrator."
         ),
-        "approval_status": "pending"
+        "approval_status": "pending",
+        "division": division
     }), 201
 
 
@@ -99,6 +109,7 @@ def register():
 
 @auth_bp.route("/login", methods=["POST"])
 def login():
+
     data = request.get_json(silent=True)
 
     if not isinstance(data, dict):
@@ -119,38 +130,37 @@ def login():
     })
 
     if not user or not check_password_hash(
-        user["password"],
+        user.get("password", ""),
         password
     ):
         return jsonify({
             "error": "Invalid credentials"
         }), 401
 
-    approval_status = user.get(
-        "approval_status",
-        "approved"
-    )
+    approval_status = user.get("approval_status")
 
     if approval_status == "pending":
         return jsonify({
             "error": (
-                "Your account is awaiting administrator approval."
+                "Your account is awaiting approval "
+                "from your division administrator."
             ),
-            "approval_status": "pending"
+            "approval_status": "pending",
+            "division": user.get("division")
         }), 403
 
     if approval_status == "rejected":
         return jsonify({
             "error": (
-                "Your account registration was rejected. "
-                "Contact an administrator."
+                "Your registration was rejected. "
+                "Contact your division administrator."
             ),
             "approval_status": "rejected"
         }), 403
 
     if approval_status != "approved":
         return jsonify({
-            "error": "Account approval status is invalid"
+            "error": "Your account is not approved."
         }), 403
 
     token = create_access_token(
@@ -160,7 +170,8 @@ def login():
     return jsonify({
         "access_token": token,
         "token": token,
-        "division": user["division"],
+        "username": user.get("username"),
+        "division": user.get("division"),
         "role": user.get("role", "user"),
         "approval_status": "approved"
     }), 200

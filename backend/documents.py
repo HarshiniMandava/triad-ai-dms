@@ -34,6 +34,47 @@ def get_current_user():
 
 
 # ==========================================
+# DELETE PERMISSION HELPER
+# ==========================================
+
+def can_user_delete_document(user, document):
+    if not user or not document:
+        return False
+
+    # Document owner can delete their own document.
+    if document.get("owner_id") == user["_id"]:
+        return True
+
+    # Only approved division admins can delete
+    # documents uploaded by other users.
+    is_admin = (
+        str(user.get("role", "")).strip().casefold()
+        == "admin"
+    )
+
+    user_division = str(
+        user.get("division", "")
+    ).strip().casefold()
+
+    document_division = str(
+        document.get("division", "")
+    ).strip().casefold()
+
+    same_division = (
+        bool(user_division)
+        and user_division == document_division
+    )
+
+    approved = (
+        str(
+            user.get("approval_status", "approved")
+        ).strip().casefold() == "approved"
+    )
+
+    return is_admin and same_division and approved
+
+
+# ==========================================
 # UPLOAD DOCUMENT WITH OCR
 # ==========================================
 
@@ -123,7 +164,7 @@ def upload_document():
 
 
 # ==========================================
-# LIST DOCUMENTS WITH DYNAMIC METADATA FILTERS
+# LIST DOCUMENTS WITH METADATA FILTERS
 # ==========================================
 
 @documents_bp.route("", methods=["GET"])
@@ -135,7 +176,6 @@ def list_documents():
     if not user:
         return jsonify({"error": "User not found"}), 404
 
-    # Find documents with approved cross-division access.
     approved_ids = current_app.db.access_requests.distinct(
         "document_id",
         {
@@ -144,22 +184,12 @@ def list_documents():
         }
     )
 
-    # Mandatory RBAC filter.
-    # Users can only list documents in their own division
-    # or documents for which they have approved access.
     access_filter = {
         "$or": [
             {"division": user["division"]},
             {"_id": {"$in": approved_ids}}
         ]
     }
-
-    # Additional filters supplied in the URL.
-    # Examples:
-    # ?Department=HR
-    # ?Report%20Type=Financial
-    # ?Priority=High
-    # ?Department=HR&Priority=High
 
     extra_filters = []
 
@@ -170,26 +200,16 @@ def list_documents():
             }), 400
 
         if key == "division":
-            # Division is stored directly on the document.
-            extra_filters.append({
-                "division": value
-            })
+            extra_filters.append({"division": value})
         else:
-            # All other fields are dynamic metadata fields.
             extra_filters.append({
                 f"metadata.{key}": value
             })
 
-    # $and ensures user filters cannot override RBAC.
-    if extra_filters:
-        query = {
-            "$and": [
-                access_filter,
-                *extra_filters
-            ]
-        }
-    else:
-        query = access_filter
+    query = (
+        {"$and": [access_filter, *extra_filters]}
+        if extra_filters else access_filter
+    )
 
     documents = current_app.db.documents.find(
         query
@@ -203,7 +223,8 @@ def list_documents():
             "filename": doc["filename"],
             "division": doc["division"],
             "metadata": doc.get("metadata", {}),
-            "owner_id": str(doc["owner_id"])
+            "owner_id": str(doc["owner_id"]),
+            "can_delete": can_user_delete_document(user, doc)
         })
 
     return jsonify({
@@ -292,8 +313,6 @@ def get_document_details(doc_id):
         "status": "approved"
     })
 
-    # Security fix:
-    # Admins cannot bypass cross-division restrictions.
     if not (same_division or approved_request):
         return jsonify({
             "error": "Access denied. Approval required."
@@ -308,6 +327,7 @@ def get_document_details(doc_id):
         "owner_id": str(document["owner_id"]),
         "metadata": document.get("metadata", {}),
         "extracted_text": document.get("extracted_text", ""),
+        "can_delete": can_user_delete_document(user, document),
         "created_at": (
             created_at.isoformat() if created_at else None
         )
@@ -315,7 +335,7 @@ def get_document_details(doc_id):
 
 
 # ==========================================
-# SECURE DOCUMENT PREVIEW API
+# SECURE PDF PREVIEW
 # ==========================================
 
 @documents_bp.route("/<doc_id>/preview", methods=["GET"])
@@ -393,7 +413,6 @@ def update_document_metadata(doc_id):
     if not document:
         return jsonify({"error": "Document not found"}), 404
 
-    # Only the owner can edit metadata.
     if document["owner_id"] != user["_id"]:
         return jsonify({
             "error": "Only the document owner can edit metadata."
@@ -453,6 +472,7 @@ def discover_documents():
         {
             "filename": 1,
             "division": 1,
+            "owner_id": 1,
             "created_at": 1
         }
     ).sort("created_at", -1)
@@ -488,10 +508,83 @@ def discover_documents():
             "can_download": access_status in [
                 "accessible",
                 "approved"
-            ]
+            ],
+            "can_delete": can_user_delete_document(user, doc)
         })
 
     return jsonify({
         "count": len(results),
         "documents": results
+    }), 200
+
+
+# ==========================================
+# DELETE DOCUMENT
+# OWNER OR SAME-DIVISION ADMIN
+# ==========================================
+
+@documents_bp.route("/<doc_id>", methods=["DELETE"])
+@jwt_required()
+def delete_document(doc_id):
+    user = get_current_user()
+
+    if not user:
+        return jsonify({
+            "error": "User not found"
+        }), 404
+
+    if not ObjectId.is_valid(doc_id):
+        return jsonify({
+            "error": "Invalid document ID"
+        }), 400
+
+    document = current_app.db.documents.find_one({
+        "_id": ObjectId(doc_id)
+    })
+
+    if not document:
+        return jsonify({
+            "error": "Document not found"
+        }), 404
+
+    if not can_user_delete_document(user, document):
+        return jsonify({
+            "error": (
+                "Access denied. Only the document owner "
+                "or an admin of the document's division "
+                "can delete this document."
+            )
+        }), 403
+
+    fs = gridfs.GridFS(current_app.db)
+
+    try:
+        # Remove stored PDF or image from GridFS.
+        fs.delete(document["file_id"])
+
+        # Remove document record, metadata and OCR text.
+        current_app.db.documents.delete_one({
+            "_id": document["_id"]
+        })
+
+        # Remove all related access requests.
+        current_app.db.access_requests.delete_many({
+            "document_id": document["_id"]
+        })
+
+    except Exception:
+        current_app.logger.exception(
+            "Failed to delete document %s", doc_id
+        )
+
+        return jsonify({
+            "error": (
+                "Document deletion was incomplete. "
+                "Please check server logs."
+            )
+        }), 500
+
+    return jsonify({
+        "message": "Document deleted successfully",
+        "document_id": doc_id
     }), 200

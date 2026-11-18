@@ -38,7 +38,7 @@ if login_data.get("division", "").upper() != "HR":
 headers = {"Authorization": f"Bearer {token}"}
 
 # Use the IT document ID from our successful upload
-document_id = "6afa0407e4729815b1b39d12"
+document_id = "6afb5212ad90dba84b3a9ea2"
 
 download_response = requests.get(
     f"{BASE_URL}/api/documents/{document_id}/download",

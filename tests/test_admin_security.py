@@ -263,7 +263,8 @@ def test_it_admin_cannot_approve_hr_user(app, client):
         json={"decision": "approve"}
     )
 
-    assert response.status_code == 404
+    # Cross-division approval is forbidden.
+    assert response.status_code == 403
 
     user = app.db.users.find_one({"_id": HR_USER_ID})
 
